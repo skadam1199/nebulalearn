@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback, useEffect, useRef } from "react"
+import { useState, useCallback, useEffect, useRef, Suspense } from "react"
 import { motion } from "framer-motion"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
@@ -139,6 +139,14 @@ function ErrorState({ error, url }: { error: string; url: string }) {
 }
 
 export default function ResultsPage() {
+  return (
+    <Suspense fallback={<LoadingState stage="extracting" />}>
+      <ResultsPageInner />
+    </Suspense>
+  )
+}
+
+function ResultsPageInner() {
   const searchParams = useSearchParams()
   const url = searchParams.get("url") || ""
   const role = searchParams.get("role") || "student"
@@ -171,10 +179,16 @@ export default function ResultsPage() {
     const process = async () => {
       try {
         setLoadingStage("extracting")
-        const res = await fetch(`${API_URL}/api/process`, {
+
+        // Faculty uses a different endpoint
+        const endpoint = role === "faculty"
+          ? `${API_URL}/api/faculty-audit`
+          : `${API_URL}/api/process`
+
+        const res = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url, language: "en" }),
+          body: JSON.stringify(role === "faculty" ? { url } : { url, language: "en" }),
         })
 
         if (!res.ok) {
@@ -189,20 +203,55 @@ export default function ResultsPage() {
         setProcessedVideoId(data.video_id)
 
         setLoadingStage("summaries")
-        const outlineSections = formatOutlineForTab(data.outline || [])
-        const outlineItemsList = formatOutlineItems(data.outline || [])
-        setOutline(outlineSections)
-        setOutlineItems(outlineItemsList)
 
-        setLoadingStage("flashcards")
-        setSummaries({
-          "90sec": data.summaries?.ninety_seconds || "",
-          "5min": data.summaries?.five_minutes || "",
-          full: data.summaries?.full || "",
-        })
+        if (role === "faculty" && data.audit) {
+          // Map faculty audit to student display format for reuse
+          const audit = data.audit
+          // Build an outline from audit issues (timestamped)
+          const issueOutline = (audit.issues || []).map((issue: any, i: number) => ({
+            title: `[${issue.severity?.toUpperCase() || "ISSUE"}] ${issue.category || "General"}: ${issue.issue}`,
+            start_time: issue.timestamp || 0,
+            subtopics: [{ title: `Fix: ${issue.suggestion}`, start_time: issue.timestamp || 0 }],
+          }))
+          setOutline(formatOutlineForTab(issueOutline))
+          setOutlineItems(formatOutlineItems(issueOutline))
 
-        setLoadingStage("embedding")
-        setFlashcards(formatFlashcards(data.flashcards || []))
+          // Build summaries from audit data
+          const scoreLines = audit.scores
+            ? Object.entries(audit.scores).map(([k, v]) => `${k.charAt(0).toUpperCase() + k.slice(1)}: ${v}/100`).join(" · ")
+            : ""
+          setSummaries({
+            "90sec": `Overall score: ${audit.overall_score ?? "N/A"}/100\n\n🔴 Top priority: ${audit.top_priority_fix || "N/A"}\n\n${scoreLines}`,
+            "5min": `${audit.summary || ""}\n\nScores:\n${scoreLines}\n\nStrengths:\n${(audit.strengths || []).map((s: string) => `• ${s}`).join("\n")}`,
+            full: `${audit.summary || ""}\n\nScores:\n${scoreLines}\n\nTop priority fix:\n${audit.top_priority_fix || ""}\n\nStrengths:\n${(audit.strengths || []).map((s: string) => `• ${s}`).join("\n")}\n\nIssues:\n${(audit.issues || []).map((iss: any) => `[${iss.severity}] ${iss.category} @ ${Math.floor((iss.timestamp || 0) / 60)}:${String((iss.timestamp || 0) % 60).padStart(2, "0")}\nIssue: ${iss.issue}\nFix: ${iss.suggestion}`).join("\n\n")}`,
+          })
+
+          // Build flashcards from issues
+          setFlashcards(
+            (audit.issues || []).slice(0, 10).map((iss: any, i: number) => ({
+              id: String(i + 1),
+              question: `What is the ${iss.severity} ${iss.category} issue at ${Math.floor((iss.timestamp || 0) / 60)}:${String((iss.timestamp || 0) % 60).padStart(2, "0")}?`,
+              answer: `Issue: ${iss.issue}\n\nFix: ${iss.suggestion}`,
+              source_time: iss.timestamp || 0,
+            }))
+          )
+        } else {
+          // Student mode (default)
+          const outlineSections = formatOutlineForTab(data.outline || [])
+          const outlineItemsList = formatOutlineItems(data.outline || [])
+          setOutline(outlineSections)
+          setOutlineItems(outlineItemsList)
+
+          setLoadingStage("flashcards")
+          setSummaries({
+            "90sec": data.summaries?.ninety_seconds || "",
+            "5min": data.summaries?.five_minutes || "",
+            full: data.summaries?.full || "",
+          })
+
+          setLoadingStage("embedding")
+          setFlashcards(formatFlashcards(data.flashcards || []))
+        }
 
         setLoading(false)
       } catch (err: any) {
