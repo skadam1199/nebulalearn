@@ -12,6 +12,7 @@ import { SummariesTab } from "@/components/results/summaries-tab"
 import { FlashcardsTab } from "@/components/results/flashcards-tab"
 import { SearchTab } from "@/components/results/search-tab"
 import { FileText, BookOpen, Layers, Search, ArrowLeft, AlertCircle } from "lucide-react"
+import { saveVideo } from "@/lib/saveVideo"
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
 
@@ -55,7 +56,6 @@ function formatFlashcards(flashcards: any[]) {
   }))
 }
 
-// Loading state component
 function LoadingState({ stage }: { stage: string }) {
   const stages = [
     { key: "extracting", label: "Agent 1 — Extracting transcript" },
@@ -79,7 +79,7 @@ function LoadingState({ stage }: { stage: string }) {
             <div className="w-8 h-8 rounded-full border-2 border-cyan-500/30 border-t-cyan-500 animate-spin" />
           </div>
           <h2 className="text-2xl font-bold text-foreground mb-2">Processing your lecture</h2>
-          <p className="text-muted-foreground text-sm">6 AI agents are working on this — takes about 30 seconds</p>
+          <p className="text-muted-foreground text-sm">AI agents are working on this — takes about 30 seconds</p>
         </motion.div>
 
         <div className="space-y-3">
@@ -116,7 +116,6 @@ function LoadingState({ stage }: { stage: string }) {
   )
 }
 
-// Error state component
 function ErrorState({ error, url }: { error: string; url: string }) {
   return (
     <div className="min-h-screen bg-background flex items-center justify-center">
@@ -180,7 +179,6 @@ function ResultsPageInner() {
       try {
         setLoadingStage("extracting")
 
-        // Faculty uses a different endpoint
         const endpoint = role === "faculty"
           ? `${API_URL}/api/faculty-audit`
           : `${API_URL}/api/process`
@@ -205,9 +203,7 @@ function ResultsPageInner() {
         setLoadingStage("summaries")
 
         if (role === "faculty" && data.audit) {
-          // Map faculty audit to student display format for reuse
           const audit = data.audit
-          // Build an outline from audit issues (timestamped)
           const issueOutline = (audit.issues || []).map((issue: any, i: number) => ({
             title: `[${issue.severity?.toUpperCase() || "ISSUE"}] ${issue.category || "General"}: ${issue.issue}`,
             start_time: issue.timestamp || 0,
@@ -216,17 +212,15 @@ function ResultsPageInner() {
           setOutline(formatOutlineForTab(issueOutline))
           setOutlineItems(formatOutlineItems(issueOutline))
 
-          // Build summaries from audit data
           const scoreLines = audit.scores
             ? Object.entries(audit.scores).map(([k, v]) => `${k.charAt(0).toUpperCase() + k.slice(1)}: ${v}/100`).join(" · ")
             : ""
-          setSummaries({
+          const summaryData = {
             "90sec": `Overall score: ${audit.overall_score ?? "N/A"}/100\n\n🔴 Top priority: ${audit.top_priority_fix || "N/A"}\n\n${scoreLines}`,
             "5min": `${audit.summary || ""}\n\nScores:\n${scoreLines}\n\nStrengths:\n${(audit.strengths || []).map((s: string) => `• ${s}`).join("\n")}`,
             full: `${audit.summary || ""}\n\nScores:\n${scoreLines}\n\nTop priority fix:\n${audit.top_priority_fix || ""}\n\nStrengths:\n${(audit.strengths || []).map((s: string) => `• ${s}`).join("\n")}\n\nIssues:\n${(audit.issues || []).map((iss: any) => `[${iss.severity}] ${iss.category} @ ${Math.floor((iss.timestamp || 0) / 60)}:${String((iss.timestamp || 0) % 60).padStart(2, "0")}\nIssue: ${iss.issue}\nFix: ${iss.suggestion}`).join("\n\n")}`,
-          })
-
-          // Build flashcards from issues
+          }
+          setSummaries(summaryData)
           setFlashcards(
             (audit.issues || []).slice(0, 10).map((iss: any, i: number) => ({
               id: String(i + 1),
@@ -235,22 +229,49 @@ function ResultsPageInner() {
               source_time: iss.timestamp || 0,
             }))
           )
+
+          // Save to Supabase (non-blocking)
+          saveVideo({
+            video_id: data.video_id,
+            title: data.title || "Lecture",
+            duration: data.duration || 0,
+            url,
+            role: "faculty",
+            outline: issueOutline,
+            summaries: summaryData,
+            flashcards: audit.issues || [],
+            language: "en",
+          })
+
         } else {
-          // Student mode (default)
           const outlineSections = formatOutlineForTab(data.outline || [])
           const outlineItemsList = formatOutlineItems(data.outline || [])
           setOutline(outlineSections)
           setOutlineItems(outlineItemsList)
 
           setLoadingStage("flashcards")
-          setSummaries({
+          const summaryData = {
             "90sec": data.summaries?.ninety_seconds || "",
             "5min": data.summaries?.five_minutes || "",
             full: data.summaries?.full || "",
-          })
+          }
+          setSummaries(summaryData)
 
           setLoadingStage("embedding")
           setFlashcards(formatFlashcards(data.flashcards || []))
+
+          // Save to Supabase (non-blocking)
+          saveVideo({
+            video_id: data.video_id,
+            title: data.title || "Lecture",
+            duration: data.duration || 0,
+            url,
+            role,
+            outline: data.outline || [],
+            summaries: summaryData,
+            flashcards: data.flashcards || [],
+            language: "en",
+          })
         }
 
         setLoading(false)
